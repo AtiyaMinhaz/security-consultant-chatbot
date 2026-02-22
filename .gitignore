@@ -1,6 +1,64 @@
-.DS_Store
+# -----------------------
+# Python
+# -----------------------
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
 .venv/
 venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# -----------------------
+# Streamlit
+# -----------------------
 .streamlit/
+.streamlit/secrets.toml
+
+# -----------------------
+# macOS
+# -----------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# -----------------------
+# VS Code
+# -----------------------
+.vscode/
+*.code-workspace
+
+# -----------------------
+# Logs
+# -----------------------
+*.log
+
+# -----------------------
+# Jupyter
+# -----------------------
+.ipynb_checkpoints/
+
+# -----------------------
+# Environment variables
+# -----------------------
+.env
+.env.*
+
+# -----------------------
+# Coverage
+# -----------------------
+.coverage
+htmlcov/
+
+# -----------------------
+# Temporary files
+# -----------------------
+*.swp
+*.swo
