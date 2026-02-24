@@ -16,9 +16,10 @@ APP_SUBTITLE = "Practical security policies + standards guidance for new busines
 KB_ROOT = "kb"
 
 # ----------------------------
-# Anthropic Claude API call
+# Anthropic Claude API call (Streaming)
 # ----------------------------
-def call_claude(api_key: str, model: str, messages: list, system: str, temperature: float = 0.2) -> str:
+def call_claude_streaming(api_key: str, model: str, messages: list, system: str, temperature: float = 0.2):
+    """Generator that yields text chunks as they stream in."""
     url = "https://api.anthropic.com/v1/messages"
     headers = {
         "x-api-key": api_key,
@@ -31,11 +32,27 @@ def call_claude(api_key: str, model: str, messages: list, system: str, temperatu
         "temperature": temperature,
         "system": system,
         "messages": messages,
+        "stream": True,
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["content"][0]["text"]
+    with requests.post(url, headers=headers, json=payload, timeout=60, stream=True) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8")
+            if decoded.startswith("data: "):
+                data_str = decoded[6:]
+                if data_str == "[DONE]":
+                    break
+                try:
+                    import json
+                    data = json.loads(data_str)
+                    if data.get("type") == "content_block_delta":
+                        delta = data.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            yield delta.get("text", "")
+                except Exception:
+                    continue
 
 
 # ----------------------------
@@ -60,7 +77,7 @@ st.markdown("""
         border-radius: 18px 18px 4px 18px;
         padding: 12px 18px;
         margin: 8px 0 8px 15%;
-        color: #e8f4fd;
+        color: #ffffff !important;
         font-size: 0.95rem;
         line-height: 1.5;
         border: 1px solid #2a5080;
@@ -70,11 +87,17 @@ st.markdown("""
         border-radius: 18px 18px 18px 4px;
         padding: 14px 20px;
         margin: 8px 15% 8px 0;
-        color: #d4e8f0;
+        color: #ffffff !important;
         font-size: 0.95rem;
         line-height: 1.6;
         border: 1px solid #2a3a4a;
         border-left: 3px solid #00d4ff;
+    }
+    /* Force all markdown text to be bright white */
+    .stMarkdown p, .stMarkdown li, .stMarkdown h1,
+    .stMarkdown h2, .stMarkdown h3, .stMarkdown h4,
+    .stMarkdown strong, .stMarkdown em, .stMarkdown code {
+        color: #f0f4f8 !important;
     }
     .chat-label-user {
         text-align: right;
@@ -361,78 +384,61 @@ final_q = suggested_q or (user_q.strip() if ask_clicked and user_q.strip() else 
 # Process Query
 # ----------------------------
 if final_q:
-    with st.spinner("🔍 Analyzing your security question..."):
-        # Retrieve KB context
-        results: List[RetrievalResult] = retriever.search(final_q, top_k=4)
+    # Retrieve KB context
+    results: List[RetrievalResult] = retriever.search(final_q, top_k=4)
+    context_block = "\n\n".join([
+        f"[KB: {textwrap.shorten(r.text, width=1200, placeholder='...')}]"
+        for r in results
+    ]) if results else "No specific KB snippets found — respond from expertise."
 
-        if results:
-            context_block = "\n\n".join([
-                f"[KB: {textwrap.shorten(r.text, width=1200, placeholder='...')}]"
-                for r in results
-            ])
-        else:
-            context_block = "No specific KB snippets found — respond from expertise."
+    system_msg = build_system_prompt(industry, stage, hosting, data_handled)
 
-        system_msg = build_system_prompt(industry, stage, hosting, data_handled)
+    # Build messages
+    messages = []
+    messages.append({
+        "role": "user",
+        "content": f"[CONTEXT FROM KNOWLEDGE BASE]\n{context_block}\n\n[END CONTEXT]\n\nPlease use the above knowledge base excerpts to inform your answer where relevant."
+    })
+    messages.append({
+        "role": "assistant",
+        "content": "Understood. I've reviewed the knowledge base. I'm ready to provide expert security guidance tailored to your business context. What's your question?"
+    })
+    for m in st.session_state.chat[-8:]:
+        messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": final_q})
 
-        # Build messages for Claude (user/assistant alternating)
-        messages = []
+    # Store user question
+    st.session_state.chat.append({"role": "user", "content": final_q})
 
-        # Add KB context as first user message (hidden context)
-        messages.append({
-            "role": "user",
-            "content": f"[CONTEXT FROM KNOWLEDGE BASE]\n{context_block}\n\n[END CONTEXT]\n\nPlease use the above knowledge base excerpts to inform your answer where relevant."
-        })
-        messages.append({
-            "role": "assistant",
-            "content": "Understood. I've reviewed the knowledge base. I'm ready to provide expert security guidance tailored to your business context. What's your question?"
-        })
+    # Stream or demo
+    if api_key:
+        try:
+            # Show user bubble immediately
+            st.markdown(f'<div class="chat-label-user">You</div><div class="user-bubble">{final_q}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="chat-label-assistant">🔐 Security Consultant</div>', unsafe_allow_html=True)
 
-        # Add conversation history (last 8 turns)
-        for m in st.session_state.chat[-8:]:
-            messages.append({"role": m["role"], "content": m["content"]})
+            # Stream response word by word using st.write_stream
+            stream = call_claude_streaming(
+                api_key=api_key,
+                model=model,
+                messages=messages,
+                system=system_msg,
+                temperature=temperature
+            )
+            answer = st.write_stream(stream)
 
-        # Add current question
-        messages.append({"role": "user", "content": final_q})
+        except Exception as e:
+            answer = f"⚠️ **API Error:** {str(e)}\n\nPlease check your API key in Streamlit Secrets."
+            st.error(answer)
+    else:
+        answer = f"""## 🔐 Demo Mode — AI Not Connected
 
-        # Store user question
-        st.session_state.chat.append({"role": "user", "content": final_q})
-
-        # Get AI response
-        if api_key:
-            try:
-                answer = call_claude(
-                    api_key=api_key,
-                    model=model,
-                    messages=messages,
-                    system=system_msg,
-                    temperature=temperature
-                )
-            except Exception as e:
-                answer = f"⚠️ **API Error:** {str(e)}\n\nPlease check your API key in Streamlit Secrets."
-        else:
-            answer = f"""## 🔐 Demo Response (AI Not Connected)
-
-**Your question:** {final_q}
-
-**Business Context:** {industry} | {stage} | {hosting} | {data_handled}
-
----
-
-This is a demo response. To get real AI-powered security consulting:
-
-**Enable Claude AI:**
+To enable real AI responses:
 1. Go to Streamlit Cloud → your app → **Settings → Secrets**
-2. Add your Anthropic API key:
-   ```
-   ANTHROPIC_API_KEY = "sk-ant-your-key-here"
-   ANTHROPIC_MODEL = "claude-sonnet-4-5"
-   ```
-3. Get your key at: **console.anthropic.com**
-4. Reboot the app
+2. Add: `ANTHROPIC_API_KEY = "sk-ant-your-key-here"`
+3. Reboot the app
+"""
+        st.info(answer)
 
-Once connected, you'll get detailed, personalized security guidance with prioritized action plans, risk assessments, and 30/60/90 day roadmaps tailored to your {industry} business."""
-
-        st.session_state.chat.append({"role": "assistant", "content": answer})
-
+    st.session_state.chat.append({"role": "assistant", "content": answer})
     st.rerun()
